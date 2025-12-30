@@ -1,0 +1,12 @@
+opencv-python
+numpy>=1.26.4
+mediapipe==0.10.14
+firebase-admin
+requests
+python-dotenv
+fastapi
+uvicorn[standard]
+pillow
+pydantic>=2.0.0
+python-jose[cryptography]
+python-multipart
