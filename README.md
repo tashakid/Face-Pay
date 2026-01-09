@@ -8,6 +8,23 @@ This system facilitates contactless payments using facial recognition. Users can
 
 The system provides a hygienic, fast, and secure payment experience ideal for retail environments, restaurants, and service industries where contactless transactions are preferred.
 
+## Application Screenshots
+
+### Home Page
+![Home Page](fintech-app-ui/public/home_page.png)
+
+The main dashboard showing real-time payment status and camera feed for face recognition.
+
+### Registration Page
+![Registration Page](fintech-app-ui/public/enroll_page.png)
+
+User registration with multi-sample face enrollment for improved accuracy.
+
+### Sales Analytics Dashboard
+![Sales Dashboard](fintech-app-ui/public/sales_page.png)
+
+Comprehensive sales analytics with time-based filtering and percentage change comparisons.
+
 ## Technology Stack
 
 ### Hardware
@@ -169,23 +186,6 @@ Face-Pay/
   - Compare current vs previous period metrics
 - ✅ **Transaction History**: Complete transaction logs with status tracking
 - ✅ **Callback Updates**: Automatic transaction status updates via M-Pesa callbacks
-
-## Application Screenshots
-
-### Home Page
-![Home Page](fintech-app-ui/public/home_page.png)
-
-The main dashboard showing real-time payment status and camera feed for face recognition.
-
-### Registration Page
-![Registration Page](fintech-app-ui/public/enroll_page.png)
-
-User registration with multi-sample face enrollment for improved accuracy.
-
-### Sales Analytics Dashboard
-![Sales Dashboard](fintech-app-ui/public/sales_page.png)
-
-Comprehensive sales analytics with time-based filtering and percentage change comparisons.
 
 ## Troubleshooting
 
