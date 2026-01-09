@@ -170,6 +170,23 @@ Face-Pay/
 - ✅ **Transaction History**: Complete transaction logs with status tracking
 - ✅ **Callback Updates**: Automatic transaction status updates via M-Pesa callbacks
 
+## Application Screenshots
+
+### Home Page
+![Home Page](fintech-app-ui/public/home_page.png)
+
+The main dashboard showing real-time payment status and camera feed for face recognition.
+
+### Registration Page
+![Registration Page](fintech-app-ui/public/enroll_page.png)
+
+User registration with multi-sample face enrollment for improved accuracy.
+
+### Sales Analytics Dashboard
+![Sales Dashboard](fintech-app-ui/public/sales_page.png)
+
+Comprehensive sales analytics with time-based filtering and percentage change comparisons.
+
 ## Troubleshooting
 
 See the `docs/` folder for detailed guides:
