@@ -1,5 +1,6 @@
 """
-Authentication and authorization module using OpenCV SFace
+Authentication and authorization module using DeepFace ArcFace
+Replaces OpenCV SFace with payment-grade face recognition
 """
 
 import firebase_admin
@@ -8,6 +9,7 @@ from fastapi import FastAPI, HTTPException, Depends, status, File, UploadFile
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 import os
+import requests
 from dotenv import load_dotenv
 import jwt
 from datetime import datetime, timedelta
@@ -15,23 +17,27 @@ import cv2
 import numpy as np
 import json
 from typing import Optional, Dict, List
+from database import db
+from deepface_auth import deepface_auth
 
 load_dotenv()
+
+FIREBASE_API_KEY = os.getenv("FIREBASE_API_KEY", "")
 
 app = FastAPI()
 security = HTTPBearer()
 
 # Initialize Firebase Admin
-try:
-    cred_path = os.getenv("FIREBASE_CREDENTIALS")
-    if cred_path and os.path.exists(cred_path):
-        cred = credentials.Certificate(cred_path)
-        firebase_admin.initialize_app(cred)
-    else:
-        # For development - initialize with default credentials
-        firebase_admin.initialize_app()
-except Exception as e:
-    print(f"Firebase initialization error: {e}")
+if not firebase_admin._apps:
+    try:
+        cred_path = os.getenv("FIREBASE_CREDENTIALS")
+        if cred_path and os.path.exists(cred_path):
+            cred = credentials.Certificate(cred_path)
+            firebase_admin.initialize_app(cred)
+        else:
+            firebase_admin.initialize_app()
+    except Exception as e:
+        print(f"Firebase initialization error in auth.py: {e}")
 
 class User(BaseModel):
     email: str
@@ -55,158 +61,7 @@ class FaceVerificationRequest(BaseModel):
     user_id: str
     face_image: str  # base64 encoded image
 
-class SFaceAuthenticator:
-    def __init__(self):
-        self.model = None
-        self.model_path = "src/face_recognition_sface_2021dec.onnx"
-        self.known_faces = {}  # Store user_id -> embedding mapping
-        self.cosine_similarity_threshold = 0.363
-    
-    def load_model(self):
-        """Load the SFace model from ONNX file"""
-        try:
-            # Check if model file exists
-            if not os.path.exists(self.model_path):
-                raise FileNotFoundError(f"SFace model file not found: {self.model_path}")
-            
-            # Load the SFace model using OpenCV's FaceRecognizerSF
-            self.model = cv2.FaceRecognizerSF_create(
-                self.model_path, 
-                config=""
-            )
-            
-            print("SFace model loaded successfully")
-            return True
-            
-        except Exception as e:
-            print(f"Error loading SFace model: {e}")
-            raise HTTPException(
-                status_code=500, 
-                detail=f"Failed to load face recognition model: {str(e)}"
-            )
-    
-    def ensure_model_loaded(self):
-        """Ensure the model is loaded before processing"""
-        if self.model is None:
-            self.load_model()
-    
-    def preprocess_face(self, face_image: np.ndarray) -> np.ndarray:
-        """Preprocess face image for SFace model"""
-        try:
-            self.ensure_model_loaded()
-            
-            # Ensure image is in the correct format (BGR)
-            if len(face_image.shape) == 2:
-                face_image = cv2.cvtColor(face_image, cv2.COLOR_GRAY2BGR)
-            elif face_image.shape[2] == 4:
-                face_image = cv2.cvtColor(face_image, cv2.COLOR_RGBA2BGR)
-            
-            # Resize to standard face size if needed (SFace expects specific size)
-            # SFace typically works with 112x112 faces
-            if face_image.shape[0] != 112 or face_image.shape[1] != 112:
-                face_image = cv2.resize(face_image, (112, 112))
-            
-            return face_image
-            
-        except Exception as e:
-            print(f"Error preprocessing face: {e}")
-            raise HTTPException(
-                status_code=400, 
-                detail=f"Face preprocessing failed: {str(e)}"
-            )
-    
-    def extract_embedding(self, face_image: np.ndarray) -> np.ndarray:
-        """Extract biometric embedding from cropped face image"""
-        try:
-            self.ensure_model_loaded()
-            
-            # Preprocess the face image
-            processed_face = self.preprocess_face(face_image)
-            
-            # Extract face embedding using SFace
-            embedding = self.model.feature(processed_face)
-            
-            # Ensure embedding is a numpy array
-            if not isinstance(embedding, np.ndarray):
-                embedding = np.array(embedding)
-            
-            return embedding
-            
-        except Exception as e:
-            print(f"Error extracting embedding: {e}")
-            raise HTTPException(
-                status_code=500, 
-                detail=f"Face embedding extraction failed: {str(e)}"
-            )
-    
-    def compare_faces(self, embedding1: np.ndarray, embedding2: np.ndarray) -> bool:
-        """Compare two face embeddings using cosine similarity"""
-        try:
-            self.ensure_model_loaded()
-            
-            # Ensure embeddings are numpy arrays
-            if not isinstance(embedding1, np.ndarray):
-                embedding1 = np.array(embedding1)
-            if not isinstance(embedding2, np.ndarray):
-                embedding2 = np.array(embedding2)
-            
-            # Calculate cosine similarity using SFace's built-in method
-            cosine_similarity = self.model.match(embedding1, embedding2, cv2.FaceRecognizerSF_COSINE)
-            
-            # Return True if similarity is above threshold
-            return cosine_similarity > self.cosine_similarity_threshold
-            
-        except Exception as e:
-            print(f"Error comparing faces: {e}")
-            raise HTTPException(
-                status_code=500, 
-                detail=f"Face comparison failed: {str(e)}"
-            )
-    
-    def register_face(self, user_id: str, embedding: np.ndarray) -> bool:
-        """Register a face embedding for a user"""
-        try:
-            self.known_faces[user_id] = embedding
-            return True
-        except Exception as e:
-            print(f"Error registering face: {e}")
-            return False
-    
-    def verify_face(self, user_id: str, embedding: np.ndarray) -> bool:
-        """Verify a face against registered embedding"""
-        try:
-            if user_id not in self.known_faces:
-                return False
-            
-            stored_embedding = self.known_faces[user_id]
-            return self.compare_faces(embedding, stored_embedding)
-            
-        except Exception as e:
-            print(f"Error verifying face: {e}")
-            return False
-    
-    def get_similarity_score(self, embedding1: np.ndarray, embedding2: np.ndarray) -> float:
-        """Get the actual cosine similarity score between two embeddings"""
-        try:
-            self.ensure_model_loaded()
-            
-            # Ensure embeddings are numpy arrays
-            if not isinstance(embedding1, np.ndarray):
-                embedding1 = np.array(embedding1)
-            if not isinstance(embedding2, np.ndarray):
-                embedding2 = np.array(embedding2)
-            
-            # Calculate cosine similarity
-            similarity = self.model.match(embedding1, embedding2, cv2.FaceRecognizerSF_COSINE)
-            
-            return similarity
-            
-        except Exception as e:
-            print(f"Error calculating similarity: {e}")
-            return 0.0
 
-# Initialize SFace authenticator
-sface_auth = SFaceAuthenticator()
 
 class AuthService:
     def __init__(self):
@@ -254,14 +109,39 @@ class AuthService:
             raise HTTPException(status_code=400, detail=str(e))
     
     async def authenticate_user(self, email: str, password: str):
-        """Authenticate user with Firebase"""
         try:
-            # Note: Firebase Admin SDK doesn't provide direct password verification
-            # In a real implementation, you would use Firebase REST API for sign-in
-            # For now, we'll return a mock response
-            return {"id": "mock_user_id", "email": email}
+            if not FIREBASE_API_KEY:
+                raise HTTPException(
+                    status_code=500,
+                    detail="Firebase API key not configured. Please set FIREBASE_API_KEY in .env file."
+                )
+
+            url = f"https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key={FIREBASE_API_KEY}"
+            payload = {
+                "email": email,
+                "password": password,
+                "returnSecureToken": True
+            }
+
+            response = requests.post(url, json=payload)
+
+            if response.status_code == 200:
+                data = response.json()
+                return {
+                    "id": data.get("localId"),
+                    "email": data.get("email"),
+                    "id_token": data.get("idToken"),
+                    "refresh_token": data.get("refreshToken")
+                }
+            else:
+                error_data = response.json()
+                error_message = error_data.get("error", {}).get("message", "Authentication failed")
+                raise HTTPException(status_code=401, detail=f"Authentication failed: {error_message}")
+
+        except HTTPException:
+            raise
         except Exception as e:
-            raise HTTPException(status_code=401, detail="Invalid credentials")
+            raise HTTPException(status_code=500, detail=f"Authentication error: {str(e)}")
 
 auth_service = AuthService()
 
@@ -289,13 +169,24 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
         )
 
 @app.post("/register", response_model=UserResponse)
-async def register(user: User):
-    """Register a new user"""
+async def register(user: User, name: str = None, phone_number: str = None):
     try:
-        firebase_user = await auth_service.create_user(user.email, user.password)
-        
+        firebase_user = auth.create_user(
+            email=user.email,
+            password=user.password
+        )
+
+        user_data = {
+            "email": firebase_user.email,
+            "name": name or "",
+            "phone_number": phone_number or "",
+            "face_registered": False
+        }
+
+        db_user_id = db.create_user(user_data)
+
         return UserResponse(
-            id=firebase_user.uid,
+            id=db_user_id,
             email=firebase_user.email,
             created_at=datetime.now()
         )
@@ -304,9 +195,7 @@ async def register(user: User):
 
 @app.post("/login", response_model=LoginResponse)
 async def login(user: User):
-    """Login user and return access token"""
     try:
-        # Authenticate user (mock implementation)
         user_data = await auth_service.authenticate_user(user.email, user.password)
         
         # Create access token
@@ -328,12 +217,22 @@ async def login(user: User):
 
 @app.get("/me", response_model=UserResponse)
 async def get_me(current_user = Depends(get_current_user)):
-    """Get current user information"""
-    return UserResponse(
-        id=current_user.uid,
-        email=current_user.email,
-        created_at=current_user.user_metadata.creation_timestamp
-    )
+    user_data = db.get_user_by_email(current_user.email)
+    if user_data:
+        return {
+            "id": user_data.get("id"),
+            "email": current_user.email,
+            "name": user_data.get("name", ""),
+            "phone_number": user_data.get("phone_number", ""),
+            "face_registered": user_data.get("face_registered", False),
+            "created_at": user_data.get("created_at")
+        }
+    else:
+        return UserResponse(
+            id=current_user.uid,
+            email=current_user.email,
+            created_at=current_user.user_metadata.creation_timestamp
+        )
 
 @app.post("/logout")
 async def logout():
@@ -344,23 +243,19 @@ async def logout():
 
 @app.post("/register-face")
 async def register_face_endpoint(request: FaceRegistrationRequest):
-    """Register a user's face using SFace"""
+    """Register a user's face using DeepFace ArcFace"""
     try:
-        # Decode base64 image
         import base64
         img_data = base64.b64decode(request.face_image)
         nparr = np.frombuffer(img_data, np.uint8)
         face_image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-        
+
         if face_image is None:
             raise HTTPException(status_code=400, detail="Invalid face image")
-        
-        # Extract embedding
-        embedding = sface_auth.extract_embedding(face_image)
-        
-        # Register face
-        success = sface_auth.register_face(request.user_id, embedding)
-        
+
+        embedding = deepface_auth.extract_embedding(face_image)
+        success = deepface_auth.register_face(request.user_id, embedding)
+
         if success:
             return {
                 "success": True,
@@ -369,104 +264,111 @@ async def register_face_endpoint(request: FaceRegistrationRequest):
             }
         else:
             raise HTTPException(status_code=500, detail="Failed to register face")
-    
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/verify-face")
 async def verify_face_endpoint(request: FaceVerificationRequest):
-    """Verify a user's face using SFace"""
+    """Verify a user's face using DeepFace ArcFace"""
     try:
-        # Decode base64 image
         import base64
         img_data = base64.b64decode(request.face_image)
         nparr = np.frombuffer(img_data, np.uint8)
         face_image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-        
+
         if face_image is None:
             raise HTTPException(status_code=400, detail="Invalid face image")
-        
-        # Extract embedding
-        embedding = sface_auth.extract_embedding(face_image)
-        
-        # Verify face
-        is_match = sface_auth.verify_face(request.user_id, embedding)
-        
-        # Get similarity score for debugging
-        if request.user_id in sface_auth.known_faces:
-            similarity = sface_auth.get_similarity_score(embedding, sface_auth.known_faces[request.user_id])
+
+        embedding = deepface_auth.extract_embedding(face_image)
+        is_match = deepface_auth.verify_face(request.user_id, embedding)
+
+        if request.user_id in deepface_auth.known_faces:
+            confidence = deepface_auth.get_similarity_score(embedding, deepface_auth.known_faces[request.user_id])
         else:
-            similarity = 0.0
-        
+            confidence = 0.0
+
         return {
             "success": True,
             "verified": is_match,
-            "similarity_score": similarity,
-            "threshold": sface_auth.cosine_similarity_threshold,
+            "confidence": confidence,
+            "threshold": deepface_auth.payment_threshold,
             "message": "Face verified successfully" if is_match else "Face verification failed"
         }
-    
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/compare-faces")
 async def compare_faces_endpoint(face_image1: str = File(...), face_image2: str = File(...)):
-    """Compare two face images and return similarity score"""
+    """Compare two face images and return confidence score"""
     try:
         import base64
-        
-        # Decode first face image
+
         img_data1 = base64.b64decode(face_image1)
         nparr1 = np.frombuffer(img_data1, np.uint8)
         face_image1 = cv2.imdecode(nparr1, cv2.IMREAD_COLOR)
-        
-        # Decode second face image
+
         img_data2 = base64.b64decode(face_image2)
         nparr2 = np.frombuffer(img_data2, np.uint8)
         face_image2 = cv2.imdecode(nparr2, cv2.IMREAD_COLOR)
-        
+
         if face_image1 is None or face_image2 is None:
             raise HTTPException(status_code=400, detail="Invalid face images")
-        
-        # Extract embeddings
-        embedding1 = sface_auth.extract_embedding(face_image1)
-        embedding2 = sface_auth.extract_embedding(face_image2)
-        
-        # Compare faces
-        is_match = sface_auth.compare_faces(embedding1, embedding2)
-        similarity = sface_auth.get_similarity_score(embedding1, embedding2)
-        
+
+        embedding1 = deepface_auth.extract_embedding(face_image1)
+        embedding2 = deepface_auth.extract_embedding(face_image2)
+
+        result = deepface_auth.compare_faces(embedding1, embedding2)
+
         return {
             "success": True,
-            "match": is_match,
-            "similarity_score": similarity,
-            "threshold": sface_auth.cosine_similarity_threshold,
-            "message": "Faces match" if is_match else "Faces do not match"
+            "match": result["verified"],
+            "confidence": result["confidence"],
+            "threshold": result["threshold"],
+            "message": "Faces match" if result["verified"] else "Faces do not match"
         }
-    
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/load-model")
 async def load_model_endpoint():
-    """Load the SFace model"""
+    """Load the DeepFace model"""
     try:
-        success = sface_auth.load_model()
+        success = deepface_auth.load_model()
         return {
             "success": success,
-            "message": "SFace model loaded successfully" if success else "Failed to load SFace model"
+            "message": "DeepFace model loaded successfully" if success else "Failed to load DeepFace model"
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/model-status")
 async def model_status():
-    """Check if SFace model is loaded"""
-    return {
-        "model_loaded": sface_auth.model is not None,
-        "model_path": sface_auth.model_path,
-        "threshold": sface_auth.cosine_similarity_threshold,
-        "registered_faces": len(sface_auth.known_faces)
-    }
+    """Check DeepFace model status"""
+    return deepface_auth.get_model_status()
+
+@app.post("/clear-cache")
+async def clear_cache():
+    """Clear all in-memory face caches"""
+    try:
+        if hasattr(deepface_auth, 'known_faces'):
+            cleared_count = len(deepface_auth.known_faces)
+            deepface_auth.known_faces.clear()
+
+            return {
+                "success": True,
+                "message": f"Cleared {cleared_count} faces from in-memory cache",
+                "cleared_count": cleared_count
+            }
+        else:
+            return {
+                "success": True,
+                "message": "No cache to clear",
+                "cleared_count": 0
+            }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 router = app

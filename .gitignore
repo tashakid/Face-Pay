@@ -1,5 +1,58 @@
+# Python
 __pycache__/
-venv/
-.env
 *.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+venv/
+venv_new/
 *.onnx
+
+# Environment
+.env
+*.local
+*.env.local
+
+# Firebase
+face-pay-a888c-firebase-adminsdk-fbsvc-880ed1144a.json
+
+# Logs
+*.log
+logs/
+backend.log
+frontend.log
+face_recognition.log
+db_debug.log
+endpoint_debug.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Node modules
+node_modules/
+.next/
+
+# Temporary files
+*.tmp
+*.temp
+db_debug.log
+endpoint_debug.log
+
+# Version files
+=0.*
+
+# Credentials
+secret.md

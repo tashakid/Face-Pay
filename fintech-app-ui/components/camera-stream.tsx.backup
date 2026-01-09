@@ -1,0 +1,304 @@
+"use client"
+
+import { useEffect, useRef, useState } from "react"
+import { Camera, CameraOff, RefreshCw } from "lucide-react"
+
+interface CameraStreamProps {
+  isActive?: boolean
+  onCapture?: (imageData: string) => void
+  className?: string
+  ipWebcamUrl?: string
+}
+
+export function CameraStream({ isActive = false, onCapture, className = "", ipWebcamUrl }: CameraStreamProps) {
+  const videoRef = useRef<HTMLVideoElement>(null)
+  const imgRef = useRef<HTMLImageElement>(null)
+  const canvasRef = useRef<HTMLCanvasElement>(null)
+  const displayImgRef = useRef<HTMLImageElement>(null)
+  const onCaptureRef = useRef(onCapture)
+  const [stream, setStream] = useState<MediaStream | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [isReady, setIsReady] = useState(false)
+  const [cameraError, setCameraError] = useState<Error | null>(null)
+  const [usingIpCamera, setUsingIpCamera] = useState(!!ipWebcamUrl)
+  const lastFrameRef = useRef<string | null>(null)
+
+  useEffect(() => {
+    onCaptureRef.current = onCapture
+  }, [onCapture])
+
+  const getErrorMessage = (err: Error): string => {
+    if (err.name === "NotAllowedError" || err.name === "PermissionDeniedError") {
+      return "Camera access denied. Please allow camera permissions in your browser."
+    }
+    if (err.name === "NotFoundError" || err.name === "DevicesNotFoundError") {
+      return "No camera found. Please connect a camera or check IP Webcam URL."
+    }
+    if (err.name === "NotReadableError" || err.name === "TrackStartError") {
+      return "Camera is already in use by another application."
+    }
+    if (err.name === "OverconstrainedError" || err.name === "ConstraintNotSatisfiedError") {
+      return "Camera doesn't support the requested settings."
+    }
+    if (err.name === "TypeError" && err.message.includes("getUserMedia")) {
+      return "Camera not available. Your browser may not support camera access, or you may need to use HTTPS."
+    }
+    return `Camera error: ${err.message}`
+  }
+
+  useEffect(() => {
+    if (!isActive) {
+      setIsReady(false)
+      lastFrameRef.current = null
+      return
+    }
+
+    let mounted = true
+    let intervalId: NodeJS.Timeout
+    let imageIntervalId: NodeJS.Timeout
+
+    if (ipWebcamUrl) {
+      setUsingIpCamera(true)
+      setError(null)
+
+      const proxyUrl = `/api/video-proxy?url=${encodeURIComponent(ipWebcamUrl)}`
+      console.log("📡 Using IP Webcam in image mode:", proxyUrl)
+
+      const imgElement = document.createElement("img")
+      imgElement.crossOrigin = "anonymous"
+      imgElement.style.display = "none"
+
+      const loadNextImage = () => {
+        if (!mounted) return
+        imgElement.src = proxyUrl + "&t=" + Date.now()
+      }
+
+      imgElement.onload = () => {
+        if (!mounted) return
+        const dimensions = { width: imgElement.naturalWidth, height: imgElement.naturalHeight }
+
+        if (imgElement.naturalWidth === 0 || imgElement.naturalHeight === 0) {
+          console.error("❌ Image has no dimensions")
+          if (mounted) setError("Image loaded but has no valid dimensions")
+          return
+        }
+
+        if (!isReady) {
+          console.log("✅ IP Webcam ready, dimensions:", dimensions)
+          setIsReady(true)
+          setCameraError(null)
+        }
+
+        const canvas = document.createElement("canvas")
+        canvas.width = imgElement.naturalWidth
+        canvas.height = imgElement.naturalHeight
+        const ctx = canvas.getContext("2d")
+
+        if (!ctx) {
+          console.error("❌ Failed to get 2d context")
+          if (mounted) setError("Failed to process image")
+          return
+        }
+
+        try {
+          ctx.drawImage(imgElement, 0, 0)
+          const frame = canvas.toDataURL("image/jpeg", 0.85)
+          lastFrameRef.current = frame
+
+          const displayImg = document.getElementById('camera-display-img') as HTMLImageElement
+          if (displayImg && displayImg.src !== frame) {
+            displayImg.src = frame
+          }
+        } catch (err) {
+          console.error("❌ Canvas draw/capture error:", err)
+          if (mounted) setError("Failed to capture frame")
+        }
+      }
+
+      imgElement.onerror = (e) => {
+        console.error("❌ IP Webcam image error:", e)
+        if (mounted) setError("Failed to load IP Webcam image. Check your connection and phone app.")
+      }
+
+      loadNextImage()
+      imageIntervalId = setInterval(loadNextImage, 100)
+    } else {
+      const startLocalCamera = async () => {
+        try {
+          const constraints = {
+            video: {
+              facingMode: "user",
+              width: { ideal: 1280 },
+              height: { ideal: 720 }
+            },
+            audio: false
+          }
+
+          console.log("📷 Starting local camera")
+          const mediaStream = await navigator.mediaDevices.getUserMedia(constraints)
+
+          if (!mounted) return
+
+          setStream(mediaStream)
+          setError(null)
+          setCameraError(null)
+
+          if (videoRef.current) {
+            videoRef.current.srcObject = mediaStream
+            videoRef.current.onloadedmetadata = () => {
+              if (!videoRef.current) return
+
+              videoRef.current.play().then(() => {
+                console.log("✅ Local camera playing")
+                setIsReady(true)
+              }).catch(playErr => {
+                console.error("❌ Local camera play error:", playErr)
+                if (mounted) {
+                  setError("Failed to play camera stream: " + playErr.message)
+                  setCameraError(playErr as Error)
+                }
+              })
+            }
+
+            videoRef.current.onerror = (e) => {
+              console.error("❌ Local camera error:", e)
+              if (mounted) {
+                setError("Camera stream error")
+                setCameraError(new Error("Video element error occurred"))
+              }
+            }
+          }
+        } catch (err) {
+          if (!mounted) return
+
+          const errorObj = err instanceof Error ? err : new Error(String(err))
+          console.error("❌ Camera error:", errorObj)
+
+          setError(getErrorMessage(errorObj))
+          setCameraError(errorObj)
+        }
+      }
+
+      startLocalCamera()
+    }
+
+    return () => {
+      mounted = false
+      if (intervalId) clearInterval(intervalId)
+      if (imageIntervalId) clearInterval(imageIntervalId)
+      if (stream) {
+        stream.getTracks().forEach(track => {
+          track.stop()
+          console.log("🛑 Stopped camera track:", track.kind)
+        })
+      }
+      if (videoRef.current && usingIpCamera) {
+        videoRef.current.src = ""
+      }
+    }
+  }, [isActive, ipWebcamUrl])
+
+  const captureFrame = (): string | null => {
+    if (usingIpCamera && lastFrameRef.current) {
+      return lastFrameRef.current
+    }
+
+    if (!videoRef.current || !isReady || !videoRef.current.videoWidth) {
+      return null
+    }
+
+    try {
+      const canvas = canvasRef.current || document.createElement("canvas")
+      if (!canvasRef.current) {
+        canvasRef.current = canvas
+      }
+
+      canvas.width = videoRef.current.videoWidth
+      canvas.height = videoRef.current.videoHeight
+      const ctx = canvas.getContext("2d")
+
+      if (!ctx) return null
+
+      ctx.drawImage(videoRef.current, 0, 0)
+
+      return canvas.toDataURL("image/jpeg", 0.85)
+    } catch (err) {
+      console.error("❌ Capture frame error:", err)
+      return null
+    }
+  }
+
+  useEffect(() => {
+    if (isActive && isReady && onCaptureRef.current) {
+      const interval = setInterval(() => {
+        const imageData = captureFrame()
+        if (imageData && onCaptureRef.current) {
+          onCaptureRef.current(imageData)
+        }
+      }, 100)
+
+      return () => clearInterval(interval)
+    }
+  }, [isActive, isReady, usingIpCamera])
+
+  const tryDirectVideo = () => {
+    setError(null)
+    console.log("🔄 Retry camera connection")
+  }
+
+  if (error) {
+    return (
+      <div className={`flex flex-col items-center justify-center bg-[#09090b] ${className}`}>
+        <CameraOff className="h-12 w-12 text-red-500 mb-2" />
+        <p className="text-[#a1a1aa] text-sm text-center px-4">{error}</p>
+        {ipWebcamUrl && (
+          <button
+            onClick={tryDirectVideo}
+            className="mt-4 flex items-center gap-2 text-[#ccff00] text-sm hover:underline"
+          >
+            <RefreshCw className="h-4 w-4" />
+            Retry
+          </button>
+        )}
+        <p className="text-[#52525b] text-xs mt-2 text-center px-4">
+          {cameraError?.name === "NotAllowedError" && "Click the camera icon in your browser address bar to allow access"}
+          {cameraError?.name === "NotFoundError" && usingIpCamera && "Ensure IP Webcam app is running on your phone"}
+        </p>
+      </div>
+    )
+  }
+
+  return (
+    <div className={`relative bg-[#09090b] overflow-hidden ${className}`}>
+      {!isReady && (
+        <div className="absolute inset-0 flex items-center justify-center bg-[#09090b]">
+          <Camera className="h-12 w-12 text-[#ccff00] animate-pulse" />
+        </div>
+      )}
+
+      {usingIpCamera && lastFrameRef.current && (
+        <img
+          id="camera-display-img"
+          src={lastFrameRef.current}
+          alt="Camera feed"
+          className="w-full h-full object-cover"
+          style={{ transform: "scaleX(-1)" }}
+        />
+      )}
+
+      <video
+        ref={videoRef}
+        autoPlay
+        playsInline
+        muted={!usingIpCamera}
+        crossOrigin="anonymous"
+        className={`w-full h-full object-cover ${isReady && !usingIpCamera ? "opacity-100" : "opacity-0"} transition-opacity duration-300`}
+        style={{ transform: "scaleX(-1)" }}
+      />
+
+      <canvas ref={canvasRef} className="hidden" />
+    </div>
+  )
+}
+
+export default CameraStream

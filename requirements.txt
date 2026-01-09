@@ -10,3 +10,5 @@ pillow
 pydantic>=2.0.0
 python-jose[cryptography]
 python-multipart
+deepface>=0.0.79
+tensorflow>=2.10.0

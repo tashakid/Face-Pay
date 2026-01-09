@@ -3,7 +3,6 @@ Face recognition and computer vision module with webcam interface
 """
 
 import cv2
-import mediapipe as mp
 import numpy as np
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.responses import JSONResponse
@@ -12,18 +11,15 @@ import io
 from PIL import Image
 import threading
 import time
+import logging
+
+logger = logging.getLogger(__name__)
 
 app = FastAPI()
 
-# Initialize MediaPipe Face Detection
-mp_face_detection = mp.solutions.face_detection
-mp_drawing = mp.solutions.drawing_utils
-
 class FaceScanner:
     def __init__(self):
-        self.face_detection = mp_face_detection.FaceDetection(
-            model_selection=0, min_detection_confidence=0.5
-        )
+        self.face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
         self.known_faces = {}
         
         # ROI (Region of Interest) settings
@@ -135,38 +131,21 @@ class FaceScanner:
             # Calculate ROI position
             roi_x, roi_y = self.calculate_roi_position(frame_width, frame_height)
             
-            # Apply dark overlay outside ROI
+# Apply dark overlay outside ROI
             frame = self.apply_dark_overlay(frame, roi_x, roi_y)
-            
-            # Detect faces
-            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            results = self.face_detection.process(rgb_frame)
-            
-            # Reset ROI color to red
+
+            gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            faces = self.face_cascade.detectMultiScale(gray_frame, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
+
             self.current_roi_color = self.roi_color_red
             face_detected_in_roi = False
-            
-            # Process detected faces
-            if results.detections:
-                for detection in results.detections:
-                    bboxC = detection.location_data.relative_bounding_box
-                    ih, iw, _ = frame.shape
-                    
-                    # Convert relative coordinates to absolute
-                    x = int(bboxC.x * iw)
-                    y = int(bboxC.y * ih)
-                    w = int(bboxC.width * iw)
-                    h = int(bboxC.height * ih)
-                    
-                    face_bbox = [x, y, w, h]
-                    
-                    # Check if face is in ROI
-                    if self.is_face_in_roi(face_bbox, roi_x, roi_y):
-                        face_detected_in_roi = True
-                        self.current_roi_color = self.roi_color_green
-                    
-                    # Draw face detection box (optional, for debugging)
-                    # cv2.rectangle(frame, (x, y), (x + w, y + h), (255, 255, 0), 2)
+
+            for (x, y, w, h) in faces:
+                face_bbox = [x, y, w, h]
+
+                if self.is_face_in_roi(face_bbox, roi_x, roi_y):
+                    face_detected_in_roi = True
+                    self.current_roi_color = self.roi_color_green
             
             # Draw ROI box
             cv2.rectangle(frame, (roi_x, roi_y), 
@@ -222,23 +201,36 @@ class FaceScanner:
         self.running = False
         if self.cap:
             self.cap.release()
-        cv2.destroyAllWindows()
+cv2.destroyAllWindows()
 
-# Initialize face scanner
-face_scanner = FaceScanner()
+# Initialize face scanner (lazy loads MediaPipe)
+face_scanner = None
+
+def get_face_scanner():
+    def get_or_create_face_scanner_instance():
+        global face_scanner
+        if face_scanner is None:
+            face_scanner = FaceScanner()
+        return face_scanner
+    
+    return get_or_create_face_scanner_instance()
 
 class FaceRecognitionSystem:
     def __init__(self):
-        self.face_detection = mp_face_detection.FaceDetection(
-            model_selection=0, min_detection_confidence=0.5
-        )
+        self.face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
         self.known_faces = {}
-    
+
     def detect_face(self, image):
         """Detect faces in an image"""
-        rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        results = self.face_detection.process(rgb_image)
-        return results
+        detection_start = time.time()
+        gray_image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        faces = self.face_cascade.detectMultiScale(gray_image, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
+        detection_time = (time.time() - detection_start) * 1000
+
+        if len(faces) > 0:
+            logger.info(f"   Face detected: {detection_time:.0f}ms")
+
+        return faces
 
 # Initialize face recognition system
 face_system = FaceRecognitionSystem()
@@ -247,26 +239,22 @@ face_system = FaceRecognitionSystem()
 async def detect_face(file: UploadFile = File(...)):
     """Detect faces in uploaded image"""
     try:
-        # Read and process image
         contents = await file.read()
         image = Image.open(io.BytesIO(contents))
         image_array = np.array(image)
-        
-        # Convert to OpenCV format
+
         if len(image_array.shape) == 3:
             image_cv = cv2.cvtColor(image_array, cv2.COLOR_RGB2BGR)
         else:
             image_cv = image_array
-        
-        # Detect faces
-        results = face_system.detect_face(image_cv)
-        
-        if results.detections:
-            face_count = len(results.detections)
+
+        faces = face_system.detect_face(image_cv)
+
+        if len(faces) > 0:
             return {
                 "success": True,
-                "face_count": face_count,
-                "message": f"Detected {face_count} face(s)"
+                "face_count": len(faces),
+                "message": f"Detected {len(faces)} face(s)"
             }
         else:
             return {
@@ -274,7 +262,7 @@ async def detect_face(file: UploadFile = File(...)):
                 "face_count": 0,
                 "message": "No faces detected"
             }
-    
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -282,32 +270,27 @@ async def detect_face(file: UploadFile = File(...)):
 async def register_face(user_id: str, file: UploadFile = File(...)):
     """Register a user's face"""
     try:
-        # Read and process image
         contents = await file.read()
         image = Image.open(io.BytesIO(contents))
         image_array = np.array(image)
-        
-        # Convert to OpenCV format
+
         if len(image_array.shape) == 3:
             image_cv = cv2.cvtColor(image_array, cv2.COLOR_RGB2BGR)
         else:
             image_cv = image_array
-        
-        # Detect face
-        results = face_system.detect_face(image_cv)
-        
-        if not results.detections:
+
+        faces = face_system.detect_face(image_cv)
+
+        if len(faces) == 0:
             raise HTTPException(status_code=400, detail="No face detected in the image")
-        
-        if len(results.detections) > 1:
+
+        if len(faces) > 1:
             raise HTTPException(status_code=400, detail="Multiple faces detected. Please provide an image with only one face.")
-        
-        # Extract face embedding
-        embedding = face_scanner.extract_face_embedding(image_cv, results)
-        
-        # Register face
+
+        embedding = face_scanner.extract_face_embedding(image_cv, faces)
+
         success = face_scanner.register_face(user_id, embedding)
-        
+
         if success:
             return {
                 "success": True,
@@ -315,7 +298,7 @@ async def register_face(user_id: str, file: UploadFile = File(...)):
             }
         else:
             raise HTTPException(status_code=500, detail="Failed to register face")
-    
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -323,32 +306,27 @@ async def register_face(user_id: str, file: UploadFile = File(...)):
 async def recognize_face(file: UploadFile = File(...)):
     """Recognize a face from uploaded image"""
     try:
-        # Read and process image
         contents = await file.read()
         image = Image.open(io.BytesIO(contents))
         image_array = np.array(image)
-        
-        # Convert to OpenCV format
+
         if len(image_array.shape) == 3:
             image_cv = cv2.cvtColor(image_array, cv2.COLOR_RGB2BGR)
         else:
             image_cv = image_array
-        
-        # Detect face
-        results = face_system.detect_face(image_cv)
-        
-        if not results.detections:
+
+        faces = face_system.detect_face(image_cv)
+
+        if len(faces) == 0:
             raise HTTPException(status_code=400, detail="No face detected in the image")
-        
-        if len(results.detections) > 1:
+
+        if len(faces) > 1:
             raise HTTPException(status_code=400, detail="Multiple faces detected. Please provide an image with only one face.")
-        
-        # Extract face embedding
-        embedding = face_scanner.extract_face_embedding(image_cv, results)
-        
-        # Recognize face
+
+        embedding = face_scanner.extract_face_embedding(image_cv, faces)
+
         user_id = face_scanner.recognize_face(embedding)
-        
+
         if user_id:
             return {
                 "success": True,
@@ -361,7 +339,7 @@ async def recognize_face(file: UploadFile = File(...)):
                 "user_id": None,
                 "message": "Face not recognized"
             }
-    
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

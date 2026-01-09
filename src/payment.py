@@ -14,6 +14,8 @@ import os
 
 load_dotenv()
 
+from database import db
+
 app = FastAPI()
 
 # M-Pesa Daraja API Configuration (Sandbox)
@@ -21,7 +23,7 @@ MPESA_KEY = os.getenv("MPESA_KEY", "")
 MPESA_SECRET = os.getenv("MPESA_SECRET", "")
 MPESA_PASSKEY = os.getenv("MPESA_PASSKEY", "")
 MPESA_SHORTCODE = os.getenv("MPESA_SHORTCODE", "174379")
-MPESA_CALLBACK_URL = os.getenv("MPESA_CALLBACK_URL",  "http://localhost:8000/mpesa/process")
+MPESA_CALLBACK_URL = os.getenv("MPESA_CALLBACK_URL", "http://localhost:8000/mpesa/callback")
 
 # API Endpoints
 OAUTH_URL = "https://sandbox.safaricom.co.ke/oauth/v1/generate?grant_type=client_credentials"
@@ -280,7 +282,6 @@ class PaymentService:
     
     def __init__(self):
         self.payment_gateway = MpesaPaymentGateway()
-        self.transactions = {}  # In-memory storage for demo
     
     def process_payment(self, payment_request: PaymentRequest) -> PaymentResponse:
         """
@@ -298,20 +299,25 @@ class PaymentService:
                 payment_request.phone_number,
                 payment_request.amount
             )
-            
+
             if result["success"]:
-                # Store transaction
                 transaction_id = result.get("checkout_request_id", result.get("merchant_request_id"))
-                self.transactions[transaction_id] = {
-                    "id": transaction_id,
+
+                transaction_data = {
+                    "checkout_request_id": transaction_id,
+                    "merchant_request_id": result.get("merchant_request_id"),
                     "user_id": payment_request.user_id,
                     "amount": payment_request.amount,
                     "phone_number": payment_request.phone_number,
                     "status": "pending",
                     "message": result["message"],
+                    "description": payment_request.description,
+                    "timestamp": datetime.now().isoformat(),
                     "created_at": datetime.now()
                 }
-                
+
+                db.create_transaction(transaction_data)
+
                 return PaymentResponse(
                     transaction_id=transaction_id,
                     status="pending",
@@ -328,49 +334,70 @@ class PaymentService:
             raise HTTPException(status_code=500, detail=f"Payment processing failed: {str(e)}")
     
     def get_transaction_status(self, transaction_id: str) -> Dict:
-        """
-        Get transaction status.
-        
-        Args:
-            transaction_id: Transaction ID to check
-            
-        Returns:
-            Transaction details
-        """
-        if transaction_id in self.transactions:
-            return self.transactions[transaction_id]
+        transaction = db.get_transaction(transaction_id)
+        if transaction:
+            return transaction
         else:
             raise HTTPException(status_code=404, detail="Transaction not found")
-    
+
     def get_user_transactions(self, user_id: str) -> List[Dict]:
-        """
-        Get all transactions for a user.
-        
-        Args:
-            user_id: User ID to get transactions for
-            
-        Returns:
-            List of user transactions
-        """
-        user_transactions = [
-            transaction for transaction in self.transactions.values()
-            if transaction.get("user_id") == user_id
-        ]
-        return user_transactions
+        return db.get_user_transactions(user_id)
+    
+    def get_all_transactions(self) -> List[Dict]:
+        return db.get_all_transactions()
     
     def handle_callback(self, callback_data: Dict) -> Dict:
-        """
-        Handle M-Pesa callback (placeholder for future implementation).
-        
-        Args:
-            callback_data: Callback data from M-Pesa
-            
-        Returns:
-            Callback processing result
-        """
-        # This would process the actual callback from M-Pesa
-        # For now, return a success response
-        return {"status": "success", "message": "Callback received"}
+        if 'Body' not in callback_data or 'stkCallback' not in callback_data['Body']:
+            return {"status": "error", "message": "Invalid callback format"}
+
+        stk_callback = callback_data['Body']['stkCallback']
+        merchant_request_id = stk_callback.get('MerchantRequestID')
+        checkout_request_id = stk_callback.get('CheckoutRequestID')
+        result_code = stk_callback.get('ResultCode')
+        result_desc = stk_callback.get('ResultDesc', '')
+
+        status = "completed" if str(result_code) == "0" else "failed"
+
+        update_data = {
+            "status": status,
+            "result_code": result_code,
+            "result_description": result_desc,
+            "updated_at": datetime.now()
+        }
+
+        if status == "completed" and 'CallbackMetadata' in stk_callback:
+            metadata = stk_callback['CallbackMetadata']['Item']
+            mpesa_receipt = None
+            mpesa_amount = None
+            mpesa_phone = None
+            transaction_date = None
+
+            for item in metadata:
+                if item['Name'] == 'MpesaReceiptNumber':
+                    mpesa_receipt = item['Value']
+                elif item['Name'] == 'Amount':
+                    mpesa_amount = item['Value']
+                elif item['Name'] == 'PhoneNumber':
+                    mpesa_phone = item['Value']
+                elif item['Name'] == 'TransactionDate':
+                    transaction_date = item['Value']
+
+            update_data.update({
+                "receipt_number": mpesa_receipt,
+                "completed_amount": mpesa_amount,
+                "customer_phone": mpesa_phone,
+                "transaction_date": transaction_date
+            })
+
+        db.update_transaction(checkout_request_id or merchant_request_id, update_data)
+
+        return {
+            "status": "success",
+            "message": "Callback processed",
+            "transaction_id": checkout_request_id,
+            "result_code": result_code,
+            "result_desc": result_desc
+        }
 
 
 # Initialize payment service
@@ -399,11 +426,9 @@ async def get_user_transactions(user_id: str):
 
 @app.get("/health")
 async def payment_health():
-    """Check payment service health"""
     return {
         "status": "healthy",
         "service": "M-Pesa STK Push Payment Gateway",
-        "total_transactions": len(payment_service.transactions),
         "shortcode": MPESA_SHORTCODE
     }
 

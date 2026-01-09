@@ -1,0 +1,430 @@
+"use client"
+
+import type React from "react"
+
+import { useState, useCallback, useEffect } from "react"
+import { User, Mail, Phone, Lock, Camera, ScanFace, CheckCircle, Loader2, XCircle, Terminal } from "lucide-react"
+import { Card, CardContent } from "@/components/ui/card"
+import { Input } from "@/components/ui/input"
+import { Button } from "@/components/ui/button"
+import { Label } from "@/components/ui/label"
+import { CameraStream } from "@/components/camera-stream"
+import { api } from "@/lib/api"
+import { useToast } from "@/hooks/use-toast"
+
+type LogLevel = 'info' | 'success' | 'error' | 'warning'
+
+interface LogEntry {
+  id: string
+  timestamp: string
+  level: LogLevel
+  message: string
+}
+
+interface FormData {
+  name: string
+  email: string
+  phone_number: string
+  password: string
+  face_image: string | null
+}
+
+export function EnrollCustomer() {
+  const { toast } = useToast()
+  const ipWebcamUrl = "http://192.168.1.117:8080/photo.jpg"
+
+  const [formData, setFormData] = useState<FormData>({
+    name: "",
+    email: "",
+    phone_number: "",
+    password: "",
+    face_image: null,
+  })
+  const [isCapturing, setIsCapturing] = useState(false)
+  const [capturedImages, setCapturedImages] = useState<string[]>([])
+  const [isSubmitting, setIsSubmitting] = useState(false)
+  const [logs, setLogs] = useState<LogEntry[]>([])
+  const [isSuccess, setIsSuccess] = useState(false)
+  const [lastCaptureTime, setLastCaptureTime] = useState(0)
+  const [lastCapturedFrame, setLastCapturedFrame] = useState<string | null>(null)
+
+  const MAX_SAMPLES = 10
+  const CAPTURE_INTERVAL = 400
+
+  const addLog = useCallback((level: LogLevel, message: string) => {
+    const newLog: LogEntry = {
+      id: Date.now().toString() + Math.random().toString(36).substr(2, 9),
+      timestamp: new Date().toLocaleTimeString('en-US', { hour12: false }),
+      level,
+      message
+    }
+    setLogs(prev => [...prev.slice(-9), newLog])
+  }, [])
+
+  const handleInputChange = (field: keyof FormData, value: string) => {
+    setFormData((prev) => ({ ...prev, [field]: value }))
+  }
+
+  const handleStartCapture = () => {
+    setIsCapturing(true)
+    setCapturedImages([])
+    setLastCaptureTime(0)
+    addLog('info', 'Starting face capture process...')
+  }
+
+  const handleImageCapture = useCallback((imageData: string) => {
+    const now = Date.now()
+    if (!isCapturing || capturedImages.length >= MAX_SAMPLES) return
+
+    if (now - lastCaptureTime < CAPTURE_INTERVAL) return
+
+    setCapturedImages(prev => {
+      const newImages = [...prev, imageData]
+      addLog('info', `Captured image ${newImages.length}/${MAX_SAMPLES}`)
+
+      if (newImages.length === MAX_SAMPLES) {
+        setIsCapturing(false)
+    setLastCapturedFrame(null)
+        setLastCapturedFrame(imageData)
+        addLog('success', 'All 10 face samples captured!')
+      }
+
+      return newImages
+    })
+    setLastCaptureTime(now)
+  }, [isCapturing, capturedImages.length, addLog, MAX_SAMPLES, lastCaptureTime])
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+
+    if (capturedImages.length !== MAX_SAMPLES) {
+      toast({
+        variant: "destructive",
+        title: "Face Samples Required",
+        description: `Please capture all ${MAX_SAMPLES} face samples before registering.`,
+      })
+      return
+    }
+
+    setIsSubmitting(true)
+    addLog('info', `Registering user with ${capturedImages.length} face samples...`)
+
+    try {
+      const formDataToSend = new FormData()
+      formDataToSend.append("email", formData.email)
+      formDataToSend.append("password", formData.password)
+      formDataToSend.append("name", formData.name)
+      formDataToSend.append("phone_number", formData.phone_number)
+
+      capturedImages.forEach((image, index) => {
+        formDataToSend.append("face_image", dataURLtoFile(image, `face_${index + 1}.jpg`))
+      })
+
+      formDataToSend.append("use_multi_sample", "true")
+      
+      addLog('info', 'Uploading face samples to server...')
+      
+      const result = await api.registerUser(formDataToSend)
+
+      if (result.success) {
+        setIsSuccess(true)
+        addLog('success', `User ${result.name} registered with ID: ${result.user_id || 'N/A'}`)
+      } else {
+        toast({
+          variant: "destructive",
+          title: "Registration Failed",
+          description: result.error || result.message || "An error occurred",
+        })
+        addLog('error', `Registration failed: ${result.error || result.message}`)
+      }
+    } catch (error) {
+      toast({
+        variant: "destructive",
+        title: "Registration Failed",
+        description: error instanceof Error ? error.message : "An unexpected error occurred",
+      })
+      addLog('error', `Registration error: ${error instanceof Error ? error.message : 'Unknown error'}`)
+    } finally {
+      setIsSubmitting(false)
+    }
+  }
+
+  const dataURLtoFile = (dataurl: string, filename: string): File => {
+    const arr = dataurl.split(',')
+    const mime = arr[0].match(/:(.*?);/)?.[1] || 'image/jpeg'
+    const bstr = atob(arr[1])
+    let n = bstr.length
+    const u8arr = new Uint8Array(n)
+    while (n--) {
+      u8arr[n] = bstr.charCodeAt(n)
+    }
+    return new File([u8arr], filename, { type: mime })
+  }
+
+  const handleReset = () => {
+    setIsSuccess(false)
+    setFormData({
+      name: "",
+      email: "",
+      phone_number: "",
+      password: "",
+      face_image: null,
+    })
+    setCapturedImages([])
+    setLogs([])
+    setIsCapturing(false)
+    setLastCapturedFrame(null)
+  }
+
+  const isFormValid = formData.name && formData.email && formData.phone_number && formData.password && capturedImages.length === MAX_SAMPLES
+
+  if (isSuccess) {
+    return (
+      <div className="p-4 lg:p-6">
+        <Card className="bg-[#18181b] border-[#27272a] max-w-2xl mx-auto">
+          <CardContent className="p-12 text-center">
+            <div className="w-20 h-20 bg-green-500/20 rounded-full flex items-center justify-center mx-auto mb-6">
+              <CheckCircle className="h-10 w-10 text-green-500" />
+            </div>
+            <h2 className="text-3xl font-bold text-white mb-4">Enrollment Successful!</h2>
+            <p className="text-[#a1a1aa] mb-8">
+              User <span className="text-[#ccff00]">{formData.name}</span> has been registered with {MAX_SAMPLES} face samples.
+            </p>
+            <div className="flex gap-4 justify-center">
+              <Button
+                onClick={handleReset}
+                className="bg-[#ccff00] text-black font-bold hover:bg-[#ccff00]/90"
+              >
+                Enroll Another Customer
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+    )
+  }
+
+  return (
+    <div className="p-4 lg:p-6">
+      <h1 className="text-2xl font-semibold text-white mb-6">Enroll Customer</h1>
+
+      <div className="grid lg:grid-cols-2 gap-6">
+        <Card className="bg-[#18181b] border-[#27272a]">
+          <CardContent className="p-6">
+            <form onSubmit={handleSubmit} className="space-y-5">
+              <div className="space-y-2">
+                <Label htmlFor="name" className="text-sm text-[#a1a1aa]">
+                  Full Name
+                </Label>
+                <div className="relative">
+                  <User className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-[#71717a]" />
+                  <Input
+                    id="name"
+                    type="text"
+                    placeholder="Enter customer name"
+                    value={formData.name}
+                    onChange={(e) => handleInputChange("name", e.target.value)}
+                    disabled={isSubmitting}
+                    className="pl-10 bg-[#09090b] border-[#27272a] text-white placeholder:text-[#52525b] focus:border-[#ccff00] focus:ring-[#ccff00]/20 disabled:opacity-50"
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="email" className="text-sm text-[#a1a1aa]">
+                  Email Address
+                </Label>
+                <div className="relative">
+                  <Mail className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-[#71717a]" />
+                  <Input
+                    id="email"
+                    type="email"
+                    placeholder="customer@email.com"
+                    value={formData.email}
+                    onChange={(e) => handleInputChange("email", e.target.value)}
+                    disabled={isSubmitting}
+                    className="pl-10 bg-[#09090b] border-[#27272a] text-white placeholder:text-[#52525b] focus:border-[#ccff00] focus:ring-[#ccff00]/20 disabled:opacity-50"
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="phone" className="text-sm text-[#a1a1aa]">
+                  Phone Number (M-Pesa)
+                </Label>
+                <div className="relative">
+                  <Phone className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-[#71717a]" />
+                  <Input
+                    id="phone"
+                    type="tel"
+                    placeholder="0712 345 678"
+                    value={formData.phone_number}
+                    onChange={(e) => handleInputChange("phone_number", e.target.value)}
+                    disabled={isSubmitting}
+                    className="pl-10 bg-[#09090b] border-[#27272a] text-white placeholder:text-[#52525b] focus:border-[#ccff00] focus:ring-[#ccff00]/20 disabled:opacity-50"
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="password" className="text-sm text-[#a1a1aa]">
+                  Password
+                </Label>
+                <div className="relative">
+                  <Lock className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-[#71717a]" />
+                  <Input
+                    id="password"
+                    type="password"
+                    placeholder="Create a secure password"
+                    value={formData.password}
+                    onChange={(e) => handleInputChange("password", e.target.value)}
+                    disabled={isSubmitting}
+                    className="pl-10 bg-[#09090b] border-[#27272a] text-white placeholder:text-[#52525b] focus:border-[#ccff00] focus:ring-[#ccff00]/20 disabled:opacity-50"
+                  />
+                </div>
+              </div>
+
+              <Button
+                type="submit"
+                disabled={!isFormValid || isSubmitting}
+                className="w-full h-12 bg-[#ccff00] text-black font-bold text-base hover:bg-[#ccff00]/90 transition-all mt-4 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {isSubmitting ? (
+                  <>
+                    <Loader2 className="h-5 w-5 mr-2 animate-spin" />
+                    Registering...
+                  </>
+                ) : (
+                  "Register User"
+                )}
+              </Button>
+            </form>
+          </CardContent>
+        </Card>
+
+        <Card className="bg-[#18181b] border-[#27272a]">
+          <CardContent className="p-6 flex flex-col items-center justify-center h-full min-h-[500px]">
+            <div className="relative w-full max-w-[280px] aspect-[9/16] bg-[#09090b] rounded-[2rem] border-2 border-[#27272a] overflow-hidden shadow-2xl">
+              <div className="absolute top-3 left-1/2 -translate-x-1/2 w-20 h-6 bg-[#18181b] rounded-full flex items-center justify-center">
+                <div className="w-3 h-3 rounded-full bg-[#27272a]" />
+              </div>
+
+              <div className="absolute inset-0">
+                <CameraStream
+                  isActive={capturedImages.length < MAX_SAMPLES && !isSubmitting}
+                  onCapture={handleImageCapture}
+                  className="w-full h-full"
+                  ipWebcamUrl={ipWebcamUrl}
+                  rotation={90}
+                />
+              </div>
+
+              {capturedImages.length === 0 && !lastCapturedFrame && (
+                <div className="absolute inset-0 flex items-center justify-center bg-black/70">
+                  <div className="text-center px-4">
+                    <ScanFace className="h-16 w-16 mx-auto mb-4 text-[#52525b]" />
+                    <p className="text-[#a1a1aa] text-sm">Align face for biometric enrollment</p>
+                  </div>
+                </div>
+              )}
+
+              {lastCapturedFrame && (
+                <img 
+                  src={lastCapturedFrame} 
+                  alt="Last captured" 
+                  className="absolute inset-0 w-full h-full object-cover"
+                  style={{ transform: "scaleX(-1) rotate(90deg)" }}
+                />
+              )}
+
+              <div className="absolute top-8 left-0 right-0 text-center px-4">
+                <div className="inline-flex items-center gap-2 bg-black/60 backdrop-blur-sm px-4 py-2 rounded-full">
+                  {isCapturing ? (
+                    <Loader2 className="h-4 w-4 animate-spin text-[#ccff00]" />
+                  ) : capturedImages.length === MAX_SAMPLES ? (
+                    <CheckCircle className="h-4 w-4 text-green-500" />
+                  ) : (
+                    <Camera className="h-4 w-4 text-[#52525b]" />
+                  )}
+                  <span className="text-sm text-white">
+                    {isCapturing
+                      ? `Capturing ${capturedImages.length}/${MAX_SAMPLES}`
+                      : capturedImages.length === MAX_SAMPLES
+                      ? "All samples captured"
+                      : `${capturedImages.length}/${MAX_SAMPLES} samples`}
+                  </span>
+                </div>
+              </div>
+
+              <div className="absolute bottom-6 left-0 right-0 flex justify-center">
+                <Button
+                  type="button"
+                  onClick={handleStartCapture}
+                  disabled={isCapturing || capturedImages.length === MAX_SAMPLES}
+                  className={`rounded-full px-6 ${
+                    capturedImages.length === MAX_SAMPLES
+                      ? "bg-green-500/20 text-green-500 border border-green-500"
+                      : capturedImages.length > 0 && !isCapturing
+                      ? "bg-[#ccff00]/20 text-[#ccff00] border border-[#ccff00]"
+                      : "bg-[#ccff00]/10 text-[#ccff00] border border-[#ccff00] hover:bg-[#ccff00] hover:text-black"
+                  }`}
+                >
+                  {isCapturing ? (
+                    <>
+                      <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                      Capturing...
+                    </>
+                  ) : capturedImages.length === MAX_SAMPLES ? (
+                    <>
+                      <CheckCircle className="h-4 w-4 mr-2" />
+                      Completed
+                    </>
+                  ) : (
+                    <>
+                      <Camera className="h-4 w-4 mr-2" />
+                      {capturedImages.length > 0 ? `Continue (${capturedImages.length}/${MAX_SAMPLES})` : 'Start Capture'}
+                    </>
+                  )}
+                </Button>
+              </div>
+            </div>
+
+            <div className="mt-6 flex items-center gap-2 text-[#52525b]">
+              <Lock className="h-4 w-4" />
+              <span className="text-xs">256-bit encrypted biometric data</span>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card className="bg-[#18181b] border-[#27272a]">
+          <CardContent className="p-6">
+            <div className="flex items-center gap-2 mb-4">
+              <Terminal className="h-5 w-5 text-[#ccff00]" />
+              <h3 className="text-white font-medium">Capture Log</h3>
+            </div>
+            <div className="bg-[#09090b] rounded-lg p-4 h-[300px] overflow-y-auto">
+              {logs.length === 0 ? (
+                <p className="text-[#52525b] text-sm text-center">No logs yet</p>
+              ) : (
+                <>
+                  {logs.map((log) => (
+                    <div key={log.id} className="flex items-start gap-2 mb-2 text-sm">
+                      <span className="text-[#52525b] text-xs whitespace-nowrap">
+                        [{log.timestamp}]
+                      </span>
+                      <span className={`${log.level === 'success' ? 'text-green-400' : log.level === 'error' ? 'text-red-400' : log.level === 'warning' ? 'text-yellow-400' : 'text-[#a1a1aa]'}`}>
+                        {log.level === 'info' ? 'ℹ️' : log.level === 'success' ? '✅' : log.level === 'error' ? '❌' : '⚠️'} {log.message}
+                      </span>
+                    </div>
+                  ))}
+                </>
+              )}
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+    </div>
+  )
+}
+
+export default EnrollCustomer
