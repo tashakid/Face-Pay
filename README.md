@@ -203,3 +203,10 @@ This project is part of a capstone project for educational purposes.
 ## Support
 
 For technical support or inquiries, please contact the development team.
+
+## Team Members 
+1. Victor Ngunyi
+2. Victor Muchina
+3. Faith Cheruto
+4. John Mwangi
+5. Natasha Wamuyu
