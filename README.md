@@ -54,7 +54,7 @@ Comprehensive sales analytics with time-based filtering and percentage change co
 
 1. **Clone the repository**
    ```bash
-   git clone https://github.com/your-repo/face-payment-backend.git
+   git clone https://github.com/tashakid/Face-Pay.git
    cd Face-Pay
    ```
 
